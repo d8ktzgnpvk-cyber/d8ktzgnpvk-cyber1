@@ -72,7 +72,7 @@
     /* Layout */
     .container {
       display: flex;
-      height: calc(100dvh - 52px); /* dynamic viewport height for mobile too */
+      height: calc(100dvh - 52px); /* dynamic viewport height */
       overflow: hidden;
     }
 
@@ -130,7 +130,6 @@
 
 <!-- Toolbar -->
 <div class="toolbar">
-
   <div class="group">
     <button id="toggleThumbsBtn">Hide Thumbnails</button>
   </div>
@@ -152,7 +151,6 @@
     <button id="searchBtn">Find</button>
     <span id="searchStatus"></span>
   </div>
-
 </div>
 
 <!-- Main Layout -->
@@ -195,6 +193,9 @@
   let searchIndex = -1;
   let lastSearchQuery = "";
 
+  // Render generation guard
+  let renderGeneration = 0;
+
   function setMessage(t){ message.textContent = t || ""; }
   function updateZoomLabel(){ zoomLabel.textContent = Math.round(zoomFactor*100)+"%"; }
 
@@ -231,28 +232,33 @@
   }
 
   /*****************************************
-      RENDER DOCUMENT (SEQUENTIAL ORDER)
+      RENDER DOCUMENT (SEQUENTIAL, GENERATION-GUARDED)
   ******************************************/
   async function renderDocument(){
     if (!pdfDoc) return;
+
+    const thisGen = ++renderGeneration; // bump generation
 
     pdfScrollArea.innerHTML = "";
     thumbSidebar.innerHTML  = "";
 
     const numPages = pdfDoc.numPages;
 
-    // Render pages and thumbnails in strict numeric order
     for (let p = 1; p <= numPages; p++) {
-      await renderPage(p);
-      await renderThumbnail(p);
+      await renderPage(p, thisGen);
+      await renderThumbnail(p, thisGen);
     }
 
-    highlightThumb(1);
+    if (thisGen === renderGeneration) {
+      highlightThumb(1);
+    }
   }
 
-  async function renderPage(p){
+  async function renderPage(p, gen){
     try {
       const page = await pdfDoc.getPage(p);
+      if (gen !== renderGeneration) return; // stale render
+
       const viewport = page.getViewport({scale: zoomFactor});
 
       const canvas = document.createElement("canvas");
@@ -274,15 +280,18 @@
         transform
       }).promise;
 
+      if (gen !== renderGeneration) return; // stale render after render finished
       pdfScrollArea.appendChild(canvas);
     } catch (e) {
       console.error("Error rendering page " + p, e);
     }
   }
 
-  async function renderThumbnail(p){
+  async function renderThumbnail(p, gen){
     try {
       const page = await pdfDoc.getPage(p);
+      if (gen !== renderGeneration) return;
+
       const viewport = page.getViewport({scale:0.25});
 
       const canvas = document.createElement("canvas");
@@ -298,9 +307,14 @@
         viewport
       }).promise;
 
+      if (gen !== renderGeneration) return;
+
       canvas.onclick = ()=>{
-        document.getElementById("page-"+p).scrollIntoView({behavior:"smooth"});
-        highlightThumb(p);
+        const el = document.getElementById("page-"+p);
+        if (el) {
+          el.scrollIntoView({behavior:"smooth"});
+          highlightThumb(p);
+        }
       };
 
       thumbSidebar.appendChild(canvas);
