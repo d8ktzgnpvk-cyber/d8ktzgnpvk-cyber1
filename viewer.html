@@ -72,7 +72,7 @@
     /* Layout */
     .container {
       display: flex;
-      height: calc(100dvh - 52px); /* dynamic viewport height */
+      height: calc(100dvh - 52px); /* dynamic viewport height for mobile too */
       overflow: hidden;
     }
 
@@ -171,15 +171,15 @@
   let pdfPath = urlParams.get("file") || DEFAULT_PDF_URL;
   if (/^https?:\/\//i.test(pdfPath)) pdfPath = DEFAULT_PDF_URL;
 
-  const pdfScrollArea = document.getElementById("pdfScrollArea");
-  const thumbSidebar  = document.getElementById("thumbSidebar");
+  const pdfScrollArea   = document.getElementById("pdfScrollArea");
+  const thumbSidebar    = document.getElementById("thumbSidebar");
   const toggleThumbsBtn = document.getElementById("toggleThumbsBtn");
 
-  const searchInput = document.getElementById("searchInput");
-  const searchBtn   = document.getElementById("searchBtn");
+  const searchInput   = document.getElementById("searchInput");
+  const searchBtn     = document.getElementById("searchBtn");
   const searchPrevBtn = document.getElementById("searchPrevBtn");
   const searchNextBtn = document.getElementById("searchNextBtn");
-  const searchStatus = document.getElementById("searchStatus");
+  const searchStatus  = document.getElementById("searchStatus");
 
   const zoomOutBtn = document.getElementById("zoomOutBtn");
   const zoomInBtn  = document.getElementById("zoomInBtn");
@@ -187,7 +187,6 @@
   const message    = document.getElementById("message");
 
   let pdfDoc = null;
-  let pageScaleBase = 1.0;
   let zoomFactor = 1.0;
   const minZoom = 0.2;
   const maxZoom = 3.0;
@@ -200,7 +199,7 @@
   function updateZoomLabel(){ zoomLabel.textContent = Math.round(zoomFactor*100)+"%"; }
 
   /*****************************************
-      LOAD PDF AND AUTO-FIT ON LOAD
+      LOAD PDF + AUTO-FIT ON LOAD
   ******************************************/
   pdfjsLib.getDocument(pdfPath).promise
     .then(async pdf => {
@@ -219,98 +218,111 @@
     });
 
   async function computeInitialZoom(){
+    if (!pdfDoc) return;
     const containerWidth =
       pdfScrollArea.clientWidth || window.innerWidth || 800;
 
     const page = await pdfDoc.getPage(1);
     const viewport = page.getViewport({scale:1.0});
-    const pageWidth = viewport.width;
+    const pageWidth = viewport.width || 800;
 
     const target = (containerWidth - 40) / pageWidth;
     zoomFactor = Math.max(minZoom, Math.min(maxZoom, target));
   }
 
   /*****************************************
-      RENDER DOCUMENT
+      RENDER DOCUMENT (SEQUENTIAL ORDER)
   ******************************************/
   async function renderDocument(){
-    pdfScrollArea.innerHTML = "";
-    thumbSidebar.innerHTML = "";
+    if (!pdfDoc) return;
 
-    const tasks = [];
-    for (let p=1; p<=pdfDoc.numPages; p++){
-      tasks.push(renderPage(p));
-      renderThumbnail(p);
+    pdfScrollArea.innerHTML = "";
+    thumbSidebar.innerHTML  = "";
+
+    const numPages = pdfDoc.numPages;
+
+    // Render pages and thumbnails in strict numeric order
+    for (let p = 1; p <= numPages; p++) {
+      await renderPage(p);
+      await renderThumbnail(p);
     }
-    await Promise.all(tasks);
+
     highlightThumb(1);
   }
 
   async function renderPage(p){
-    const page = await pdfDoc.getPage(p);
-    const viewport = page.getViewport({scale: zoomFactor});
+    try {
+      const page = await pdfDoc.getPage(p);
+      const viewport = page.getViewport({scale: zoomFactor});
 
-    const canvas = document.createElement("canvas");
-    canvas.className = "pdf-page";
-    canvas.id = "page-" + p;
+      const canvas = document.createElement("canvas");
+      canvas.className = "pdf-page";
+      canvas.id = "page-" + p;
 
-    const ctx = canvas.getContext("2d");
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width  = viewport.width  * dpr;
-    canvas.height = viewport.height * dpr;
+      const ctx = canvas.getContext("2d");
+      const dpr = window.devicePixelRatio || 1;
 
-    canvas.style.width = viewport.width + "px";
+      canvas.width  = viewport.width  * dpr;
+      canvas.height = viewport.height * dpr;
+      canvas.style.width = viewport.width + "px";
 
-    const transform = dpr !== 1 ? [dpr,0,0,dpr,0,0] : null;
+      const transform = dpr !== 1 ? [dpr,0,0,dpr,0,0] : null;
 
-    await page.render({
-      canvasContext: ctx,
-      viewport,
-      transform
-    }).promise;
+      await page.render({
+        canvasContext: ctx,
+        viewport,
+        transform
+      }).promise;
 
-    pdfScrollArea.appendChild(canvas);
+      pdfScrollArea.appendChild(canvas);
+    } catch (e) {
+      console.error("Error rendering page " + p, e);
+    }
   }
 
   async function renderThumbnail(p){
-    const page = await pdfDoc.getPage(p);
-    const viewport = page.getViewport({scale:0.25});
+    try {
+      const page = await pdfDoc.getPage(p);
+      const viewport = page.getViewport({scale:0.25});
 
-    const canvas = document.createElement("canvas");
-    canvas.className = "thumb";
-    canvas.id = "thumb-" + p;
+      const canvas = document.createElement("canvas");
+      canvas.className = "thumb";
+      canvas.id = "thumb-" + p;
 
-    canvas.width  = viewport.width;
-    canvas.height = viewport.height;
+      canvas.width  = viewport.width;
+      canvas.height = viewport.height;
 
-    const ctx = canvas.getContext("2d");
-    await page.render({
-      canvasContext: ctx,
-      viewport
-    }).promise;
+      const ctx = canvas.getContext("2d");
+      await page.render({
+        canvasContext: ctx,
+        viewport
+      }).promise;
 
-    canvas.onclick = ()=>{
-      document.getElementById("page-"+p).scrollIntoView({behavior:"smooth"});
-      highlightThumb(p);
-    };
+      canvas.onclick = ()=>{
+        document.getElementById("page-"+p).scrollIntoView({behavior:"smooth"});
+        highlightThumb(p);
+      };
 
-    thumbSidebar.appendChild(canvas);
+      thumbSidebar.appendChild(canvas);
+    } catch (e) {
+      console.error("Error rendering thumbnail " + p, e);
+    }
   }
 
   function highlightThumb(p){
     document.querySelectorAll(".thumb").forEach(t=>t.classList.remove("selected"));
     const t = document.getElementById("thumb-"+p);
-    if(t) t.classList.add("selected");
+    if (t) t.classList.add("selected");
   }
 
   /*****************************************
-      THUMB TOGGLE
+      THUMBNAIL TOGGLE
   ******************************************/
   toggleThumbsBtn.onclick = ()=>{
-    if(thumbSidebar.classList.contains("hidden")){
+    if (thumbSidebar.classList.contains("hidden")){
       thumbSidebar.classList.remove("hidden");
       toggleThumbsBtn.textContent = "Hide Thumbnails";
-    }else{
+    } else {
       thumbSidebar.classList.add("hidden");
       toggleThumbsBtn.textContent = "Show Thumbnails";
     }
@@ -321,7 +333,7 @@
   ******************************************/
   function rerenderAndJump(){
     renderDocument().then(()=>{
-      if(searchIndex>=0) goToResult(searchIndex);
+      if (searchIndex >= 0) goToResult(searchIndex);
     });
   }
 
@@ -338,36 +350,38 @@
   };
 
   /*****************************************
-      SEARCH WITH MULTIPLE RESULTS
+      SEARCH (MULTI-RESULT WITH NAV)
   ******************************************/
-  function normalize(str){ return (str||"").toLowerCase(); }
+  function normalize(str){ return (str || "").toLowerCase(); }
 
   async function buildResults(q){
     searchResults = [];
-    searchIndex = -1;
+    searchIndex   = -1;
 
     const qNorm = normalize(q);
-    for(let p=1; p<=pdfDoc.numPages; p++){
+    const numPages = pdfDoc.numPages;
+
+    for (let p = 1; p <= numPages; p++) {
       const page = await pdfDoc.getPage(p);
       const text = await page.getTextContent();
       const full = text.items.map(i=>i.str).join(" ");
       let idx = normalize(full).indexOf(qNorm);
-      while(idx !== -1){
+      while (idx !== -1) {
         searchResults.push({page:p});
-        idx = normalize(full).indexOf(qNorm, idx+qNorm.length);
+        idx = normalize(full).indexOf(qNorm, idx + qNorm.length);
       }
     }
   }
 
   function goToResult(i){
-    if(!searchResults.length) return;
+    if (!searchResults.length) return;
 
     i = (i % searchResults.length + searchResults.length) % searchResults.length;
     searchIndex = i;
 
     const r = searchResults[i];
     const el = document.getElementById("page-"+r.page);
-    if(el){
+    if (el){
       el.scrollIntoView({behavior:"smooth"});
       highlightThumb(r.page);
     }
@@ -377,38 +391,46 @@
   }
 
   async function doSearch(){
+    if (!pdfDoc) return;
+
     const q = searchInput.value.trim();
-    if(!q){
+    if (!q){
       searchResults = [];
-      searchIndex = -1;
+      searchIndex   = -1;
+      lastSearchQuery = "";
       searchStatus.textContent = "";
       return;
     }
 
-    if(q !== lastSearchQuery){
+    if (q !== lastSearchQuery){
       lastSearchQuery = q;
       searchStatus.textContent = "Searching…";
       await buildResults(q);
     }
 
-    if(!searchResults.length){
+    if (!searchResults.length){
       searchStatus.textContent = "No matches";
       return;
     }
 
-    goToResult(searchIndex+1);
+    goToResult(searchIndex + 1);
   }
 
   searchBtn.onclick = doSearch;
-  searchInput.onkeydown = e=>{ if(e.key==="Enter") doSearch(); };
+  searchInput.onkeydown = e => { if (e.key === "Enter") doSearch(); };
 
-  searchNextBtn.onclick = ()=> goToResult(searchIndex+1);
-  searchPrevBtn.onclick = ()=> goToResult(searchIndex-1);
+  searchNextBtn.onclick = ()=> goToResult(searchIndex + 1);
+  searchPrevBtn.onclick = ()=> goToResult(searchIndex - 1);
 
   window.addEventListener("keydown", e=>{
-    if(!searchResults.length) return;
-    if(e.key==="ArrowRight"||e.key==="ArrowDown"){ e.preventDefault(); goToResult(searchIndex+1); }
-    if(e.key==="ArrowLeft" ||e.key==="ArrowUp"  ){ e.preventDefault(); goToResult(searchIndex-1); }
+    if (!searchResults.length) return;
+    if (e.key === "ArrowRight" || e.key === "ArrowDown"){
+      e.preventDefault();
+      goToResult(searchIndex + 1);
+    } else if (e.key === "ArrowLeft" || e.key === "ArrowUp"){
+      e.preventDefault();
+      goToResult(searchIndex - 1);
+    }
   });
 
   /*****************************************
@@ -416,6 +438,7 @@
   ******************************************/
   let resizeTimer = null;
   window.addEventListener("resize", ()=>{
+    if (!pdfDoc) return;
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(async ()=>{
       await computeInitialZoom();
