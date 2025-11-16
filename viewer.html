@@ -213,6 +213,11 @@
     const minZoom = 0.2;
     const maxZoom = 3.0;
 
+    // Search state
+    let searchResults = [];       // [{ page: number }]
+    let searchIndex = -1;         // current result index
+    let lastSearchQuery = "";
+
     function setMessage(text) {
       message.textContent = text || "";
     }
@@ -250,7 +255,6 @@
     async function computeInitialZoom() {
       if (!pdfDoc) return;
 
-      // Width of the scroll area (inside iframe), minus some padding
       const containerWidth =
         pdfScrollArea.clientWidth || window.innerWidth || 800;
 
@@ -263,10 +267,7 @@
         return;
       }
 
-      // Target: page width ≈ container width - 40px padding
       const targetScale = (containerWidth - 40) / pageWidth;
-
-      // Clamp within allowed zoom range
       zoomFactor = Math.max(minZoom, Math.min(maxZoom, targetScale));
     }
 
@@ -276,7 +277,6 @@
     async function renderDocument() {
       if (!pdfDoc) return;
 
-      // Clear old canvases
       pdfScrollArea.innerHTML = "";
       thumbSidebar.innerHTML = "";
 
@@ -285,7 +285,7 @@
 
       for (let pageNum = 1; pageNum <= numPages; pageNum++) {
         pagePromises.push(renderPage(pageNum));
-        renderThumbnail(pageNum);  // thumbs independent of zoom
+        renderThumbnail(pageNum);
       }
 
       await Promise.all(pagePromises);
@@ -308,7 +308,6 @@
 
         const context = canvas.getContext("2d");
 
-        // HiDPI support
         const outputScale = window.devicePixelRatio || 1;
         const width = viewport.width;
         const height = viewport.height;
@@ -316,9 +315,8 @@
         canvas.width = width * outputScale;
         canvas.height = height * outputScale;
 
-        // Let CSS handle responsive display; aspect ratio preserved
         canvas.style.width = width + "px";
-        // height is auto via .pdf-page
+        // height is auto via CSS .pdf-page
 
         const transform =
           outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : null;
@@ -356,7 +354,6 @@
           viewport: viewport
         }).promise;
 
-        // Click to scroll to page
         canvas.addEventListener("click", () => {
           const target = document.getElementById("page-" + pageNum);
           if (target) {
@@ -401,20 +398,80 @@
     zoomInBtn.addEventListener("click", () => {
       zoomFactor = Math.min(maxZoom, zoomFactor * 1.2);
       updateZoomLabel();
-      renderDocument();
+      renderDocument().then(() => jumpToCurrentSearchIfAny());
     });
 
     zoomOutBtn.addEventListener("click", () => {
       zoomFactor = Math.max(minZoom, zoomFactor / 1.2);
       updateZoomLabel();
-      renderDocument();
+      renderDocument().then(() => jumpToCurrentSearchIfAny());
     });
 
     /* -----------------------
-       Simple text search
+       Search with multiple results
     ------------------------ */
     function normalize(str) {
       return (str || "").toLowerCase();
+    }
+
+    async function buildSearchResults(query) {
+      searchResults = [];
+      searchIndex = -1;
+
+      if (!pdfDoc) return;
+
+      const qNorm = normalize(query);
+      const numPages = pdfDoc.numPages;
+
+      for (let p = 1; p <= numPages; p++) {
+        const page = await pdfDoc.getPage(p);
+        const textContent = await page.getTextContent();
+        const fullText = textContent.items.map((i) => i.str).join(" ");
+        const normText = normalize(fullText);
+
+        let idx = normText.indexOf(qNorm);
+        while (idx !== -1) {
+          searchResults.push({ page: p });
+          idx = normText.indexOf(qNorm, idx + qNorm.length);
+        }
+      }
+    }
+
+    function goToSearchResult(index) {
+      if (!searchResults.length) return;
+      const boundedIndex = ((index % searchResults.length) + searchResults.length) % searchResults.length;
+      searchIndex = boundedIndex;
+
+      const res = searchResults[searchIndex];
+      const target = document.getElementById("page-" + res.page);
+      if (target) {
+        target.scrollIntoView({
+          behavior: "smooth",
+          block: "start"
+        });
+        highlightThumb(res.page);
+      }
+
+      searchStatus.textContent =
+        "Match " +
+        (searchIndex + 1) +
+        " of " +
+        searchResults.length +
+        " (use arrow keys to move)";
+    }
+
+    function nextSearchResult() {
+      if (!searchResults.length) return;
+      goToSearchResult(
+        searchIndex < 0 ? 0 : searchIndex + 1
+      );
+    }
+
+    function prevSearchResult() {
+      if (!searchResults.length) return;
+      goToSearchResult(
+        searchIndex < 0 ? searchResults.length - 1 : searchIndex - 1
+      );
     }
 
     async function performSearch() {
@@ -422,35 +479,32 @@
 
       const query = searchInput.value.trim();
       if (!query) {
+        searchResults = [];
+        searchIndex = -1;
+        lastSearchQuery = "";
         searchStatus.textContent = "";
         return;
       }
 
-      const q = normalize(query);
-      searchStatus.textContent = "Searching…";
+      // If new query, rebuild results
+      if (query !== lastSearchQuery) {
+        lastSearchQuery = query;
+        searchStatus.textContent = "Searching…";
+        await buildSearchResults(query);
+      }
 
-      try {
-        for (let p = 1; p <= pdfDoc.numPages; p++) {
-          const page = await pdfDoc.getPage(p);
-          const textContent = await page.getTextContent();
-          const fullText = textContent.items.map((i) => i.str).join(" ");
-          if (normalize(fullText).includes(q)) {
-            const target = document.getElementById("page-" + p);
-            if (target) {
-              target.scrollIntoView({
-                behavior: "smooth",
-                block: "start"
-              });
-              highlightThumb(p);
-            }
-            searchStatus.textContent = "Found on page " + p;
-            return;
-          }
-        }
+      if (!searchResults.length) {
         searchStatus.textContent = "No matches found.";
-      } catch (e) {
-        console.error("Search error:", e);
-        searchStatus.textContent = "Error during search.";
+        return;
+      }
+
+      // Move to next result
+      nextSearchResult();
+    }
+
+    function jumpToCurrentSearchIfAny() {
+      if (searchIndex >= 0 && searchIndex < searchResults.length) {
+        goToSearchResult(searchIndex);
       }
     }
 
@@ -458,6 +512,19 @@
     searchInput.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
         performSearch();
+      }
+    });
+
+    // Keyboard navigation for search results: arrow keys
+    window.addEventListener("keydown", (e) => {
+      if (!searchResults.length) return;
+
+      if (e.key === "ArrowRight" || e.key === "ArrowDown") {
+        e.preventDefault();
+        nextSearchResult();
+      } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
+        e.preventDefault();
+        prevSearchResult();
       }
     });
   </script>
