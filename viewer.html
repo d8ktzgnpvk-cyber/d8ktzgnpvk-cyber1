@@ -103,16 +103,13 @@
       left: 0;
       width: 100%;
       height: 100%;
-      pointer-events: none; /* only links inside capture clicks */
+      pointer-events: none;
     }
 
     .annotation-link {
       position: absolute;
       pointer-events: auto;
       text-decoration: none;
-      /* Optional: faint outline on hover for debugging:
-      outline: 1px dashed rgba(255,255,255,0.2);
-      */
     }
 
     /* Thumbnails */
@@ -224,7 +221,7 @@
   function updateZoomLabel(){ zoomLabel.textContent = Math.round(zoomFactor*100)+"%"; }
 
   /*****************************************
-      LOAD PDF + AUTO-FIT ON LOAD
+      LOAD PDF + AUTO-FIT ONCE
   ******************************************/
   pdfjsLib.getDocument(pdfPath).promise
     .then(async pdf => {
@@ -256,13 +253,15 @@
   }
 
   /*****************************************
-      HELPERS: CURRENT PAGE IN VIEW
+      HELPERS: CURRENT PAGE IN VIEW (ROBUST)
   ******************************************/
   function getCurrentPageInView(){
     const pages = Array.from(document.querySelectorAll(".pdf-page"));
     if (!pages.length) return 1;
 
-    const scrollTop = pdfScrollArea.scrollTop;
+    const containerRect = pdfScrollArea.getBoundingClientRect();
+    const containerTop = containerRect.top;
+
     let bestPage = 1;
     let bestDist = Infinity;
 
@@ -272,8 +271,8 @@
       if (!m) continue;
       const pageNum = parseInt(m[1], 10) || 1;
 
-      const offset = canvas.offsetTop;
-      const dist = Math.abs(offset - scrollTop);
+      const rect = canvas.getBoundingClientRect();
+      const dist = Math.abs(rect.top - containerTop);
       if (dist < bestDist){
         bestDist = dist;
         bestPage = pageNum;
@@ -568,20 +567,9 @@
     }
   });
 
-  /*****************************************
-      AUTO RE-FIT + RE-RENDER ON RESIZE
-  ******************************************/
-  let resizeTimer = null;
-  window.addEventListener("resize", ()=>{
-    if (!pdfDoc) return;
-    clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(async ()=>{
-      await computeInitialZoom();
-      updateZoomLabel();
-      rerenderAndJump();  // keeps your place instead of jumping to page 1
-    }, 350);
-  });
-
+  /* NOTE: No window.resize handler anymore.
+     Viewer will not auto-refit on browser resize,
+     so it will not jump to the first page. */
 </script>
 </body>
 </html>
