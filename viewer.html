@@ -23,13 +23,25 @@
     .toolbar {
       background: #111;
       border-bottom: 1px solid #222;
-      padding: 10px 16px;
+      padding: 8px 16px;
       display: flex;
       align-items: center;
-      gap: 16px;
-      z-index: 2;
-      font-size: 14px;
+      gap: 12px;
       flex-wrap: wrap;
+      font-size: 14px;
+      z-index: 2;
+    }
+
+    .toolbar .group {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .toolbar .sep {
+      width: 1px;
+      height: 24px;
+      background: #333;
     }
 
     .toolbar button {
@@ -60,18 +72,6 @@
       opacity: 0.7;
     }
 
-    .toolbar .group {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-    }
-
-    .toolbar .sep {
-      width: 1px;
-      height: 24px;
-      background: #333;
-    }
-
     /* Main layout: pages + thumbnails */
     .container {
       display: flex;
@@ -91,8 +91,8 @@
       margin: 0 auto 30px auto;
       box-shadow: 0 0 20px rgba(0, 0, 0, 0.6);
       background: #222;
-      width: 100%;    /* responsive width */
-      height: auto;   /* keep intrinsic aspect ratio */
+      width: 100%;   /* responsive width; height controlled by aspect ratio */
+      height: auto;
     }
 
     /* Right thumbnail bar */
@@ -208,10 +208,10 @@
     const zoomLabel = document.getElementById("zoomLabel");
 
     let pdfDoc = null;
-    let pageScaleBase = 1.3;   // base scale
-    let zoomFactor = .69;      // multiplier for zoom buttons
+    let pageScaleBase = 1.0;      // base scale; we compute zoomFactor to fit
+    let zoomFactor = 1.0;         // multiplier adjusted by auto-fit and buttons
     const minZoom = 0.2;
-    const maxZoom = 2.5;
+    const maxZoom = 3.0;
 
     function setMessage(text) {
       message.textContent = text || "";
@@ -226,10 +226,16 @@
     ------------------------ */
     pdfjsLib
       .getDocument(pdfPath)
-      .promise.then(function (pdf) {
+      .promise.then(async function (pdf) {
         pdfDoc = pdf;
+        setMessage("Calculating initial zoom…");
+
+        await computeInitialZoom();   // fit-to-width based on page 1
+        updateZoomLabel();
+
         setMessage("Rendering pages…");
-        renderDocument();
+        await renderDocument();
+        setMessage("");
       })
       .catch(function (err) {
         console.error("Error loading PDF:", err);
@@ -237,6 +243,32 @@
         pdfScrollArea.innerHTML =
           '<div style="color:#f66;font-size:14px;">Error loading PDF.</div>';
       });
+
+    /* -----------------------
+       Compute initial zoom for fit-to-width
+    ------------------------ */
+    async function computeInitialZoom() {
+      if (!pdfDoc) return;
+
+      // Width of the scroll area (inside iframe), minus some padding
+      const containerWidth =
+        pdfScrollArea.clientWidth || window.innerWidth || 800;
+
+      const page = await pdfDoc.getPage(1);
+      const viewport = page.getViewport({ scale: 1.0 });
+      const pageWidth = viewport.width;
+
+      if (!pageWidth) {
+        zoomFactor = 1.0;
+        return;
+      }
+
+      // Target: page width ≈ container width - 40px padding
+      const targetScale = (containerWidth - 40) / pageWidth;
+
+      // Clamp within allowed zoom range
+      zoomFactor = Math.max(minZoom, Math.min(maxZoom, targetScale));
+    }
 
     /* -----------------------
        Render all pages + thumbnails
@@ -247,19 +279,17 @@
       // Clear old canvases
       pdfScrollArea.innerHTML = "";
       thumbSidebar.innerHTML = "";
-      setMessage("Rendering pages…");
 
       const numPages = pdfDoc.numPages;
       const pagePromises = [];
 
       for (let pageNum = 1; pageNum <= numPages; pageNum++) {
         pagePromises.push(renderPage(pageNum));
-        renderThumbnail(pageNum);  // thumbs stay small, no zoom
+        renderThumbnail(pageNum);  // thumbs independent of zoom
       }
 
       await Promise.all(pagePromises);
       highlightThumb(1);
-      setMessage("");
     }
 
     /* -----------------------
@@ -286,9 +316,9 @@
         canvas.width = width * outputScale;
         canvas.height = height * outputScale;
 
-        // Responsive display size; browser preserves aspect ratio
+        // Let CSS handle responsive display; aspect ratio preserved
         canvas.style.width = width + "px";
-        // DO NOT set style.height; allow height:auto via CSS
+        // height is auto via .pdf-page
 
         const transform =
           outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : null;
@@ -379,8 +409,6 @@
       updateZoomLabel();
       renderDocument();
     });
-
-    updateZoomLabel();
 
     /* -----------------------
        Simple text search
