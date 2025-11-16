@@ -17,6 +17,7 @@
       color: white;
       font-family: system-ui, -apple-system, sans-serif;
       overflow: hidden;
+      overscroll-behavior: none;
     }
 
     /* Toolbar */
@@ -80,6 +81,7 @@
       flex: 1;
       overflow-y: auto;
       padding: 20px;
+      overscroll-behavior: contain; /* prevent scroll chaining to parent page */
     }
 
     /* Page wrapper + canvas */
@@ -418,12 +420,24 @@
     if (t) t.classList.add("selected");
   }
 
+  /*****************************************
+      SCROLL TO PAGE (ONLY INSIDE VIEWER)
+  ******************************************/
   function scrollToPage(pageNum){
     const el = document.getElementById("page-" + pageNum);
-    if (el){
-      el.scrollIntoView({behavior:"smooth"});
-      highlightThumb(pageNum);
-    }
+    if (!el) return;
+
+    const containerRect = pdfScrollArea.getBoundingClientRect();
+    const elRect        = el.getBoundingClientRect();
+
+    const offset = elRect.top - containerRect.top + pdfScrollArea.scrollTop;
+
+    pdfScrollArea.scrollTo({
+      top: offset,
+      behavior: "smooth"
+    });
+
+    highlightThumb(pageNum);
   }
 
   /*****************************************
