@@ -82,13 +82,37 @@
       padding: 20px;
     }
 
-    .pdf-page {
-      display: block;
+    /* Page wrapper + canvas */
+    .page-wrapper {
+      position: relative;
       margin: 0 auto 30px auto;
       box-shadow: 0 0 20px rgba(0,0,0,0.6);
       background: #222;
+    }
+
+    .pdf-page {
+      display: block;
       width: 100%;
       height: auto;
+    }
+
+    /* Annotation layer */
+    .annotation-layer {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none; /* only links inside capture clicks */
+    }
+
+    .annotation-link {
+      position: absolute;
+      pointer-events: auto;
+      text-decoration: none;
+      /* Optional: faint outline on hover for debugging:
+      outline: 1px dashed rgba(255,255,255,0.2);
+      */
     }
 
     /* Thumbnails */
@@ -209,7 +233,7 @@
       await computeInitialZoom();
       updateZoomLabel();
       setMessage("Rendering pages…");
-      await renderDocument();
+      await renderDocument(1); // start at page 1 on initial load
       setMessage("");
     })
     .catch(err => {
@@ -232,12 +256,48 @@
   }
 
   /*****************************************
-      RENDER DOCUMENT (SEQUENTIAL, GENERATION-GUARDED)
+      HELPERS: CURRENT PAGE IN VIEW
   ******************************************/
-  async function renderDocument(){
+  function getCurrentPageInView(){
+    const pages = Array.from(document.querySelectorAll(".pdf-page"));
+    if (!pages.length) return 1;
+
+    const scrollTop = pdfScrollArea.scrollTop;
+    let bestPage = 1;
+    let bestDist = Infinity;
+
+    for (const canvas of pages){
+      const id = canvas.id || "";
+      const m = id.match(/^page-(\d+)$/);
+      if (!m) continue;
+      const pageNum = parseInt(m[1], 10) || 1;
+
+      const offset = canvas.offsetTop;
+      const dist = Math.abs(offset - scrollTop);
+      if (dist < bestDist){
+        bestDist = dist;
+        bestPage = pageNum;
+      }
+    }
+    return bestPage;
+  }
+
+  function scrollToPage(pageNum){
+    const el = document.getElementById("page-"+pageNum);
+    if (el){
+      el.scrollIntoView({behavior:"smooth"});
+      highlightThumb(pageNum);
+    }
+  }
+
+  /*****************************************
+      RENDER DOCUMENT (SEQUENTIAL, GENERATION-GUARDED)
+      targetPage: page number to scroll back to (optional)
+  ******************************************/
+  async function renderDocument(targetPage){
     if (!pdfDoc) return;
 
-    const thisGen = ++renderGeneration; // bump generation
+    const thisGen = ++renderGeneration;
 
     pdfScrollArea.innerHTML = "";
     thumbSidebar.innerHTML  = "";
@@ -249,17 +309,30 @@
       await renderThumbnail(p, thisGen);
     }
 
-    if (thisGen === renderGeneration) {
-      highlightThumb(1);
+    if (thisGen !== renderGeneration) return;
+
+    if (typeof targetPage === "number" && targetPage >= 1 && targetPage <= numPages){
+      scrollToPage(targetPage);
+    } else {
+      scrollToPage(1);
     }
   }
 
+  /*****************************************
+      RENDER PAGE + LINK ANNOTATIONS
+  ******************************************/
   async function renderPage(p, gen){
     try {
       const page = await pdfDoc.getPage(p);
-      if (gen !== renderGeneration) return; // stale render
+      if (gen !== renderGeneration) return;
 
       const viewport = page.getViewport({scale: zoomFactor});
+
+      // Wrapper to hold canvas + annotation layer
+      const wrapper = document.createElement("div");
+      wrapper.className = "page-wrapper";
+      wrapper.id = "page-wrap-" + p;
+      wrapper.style.width = viewport.width + "px";
 
       const canvas = document.createElement("canvas");
       canvas.className = "pdf-page";
@@ -280,13 +353,62 @@
         transform
       }).promise;
 
-      if (gen !== renderGeneration) return; // stale render after render finished
-      pdfScrollArea.appendChild(canvas);
+      if (gen !== renderGeneration) return;
+
+      wrapper.appendChild(canvas);
+      pdfScrollArea.appendChild(wrapper);
+
+      // Render clickable link annotations on top
+      await renderAnnotations(page, viewport, p, gen, wrapper);
+
     } catch (e) {
       console.error("Error rendering page " + p, e);
     }
   }
 
+  async function renderAnnotations(page, viewport, p, gen, wrapper){
+    try {
+      const annotations = await page.getAnnotations();
+      if (gen !== renderGeneration) return;
+
+      const linkAnnots = annotations.filter(a => a.subtype === "Link" && a.url);
+      if (!linkAnnots.length) return;
+
+      const layer = document.createElement("div");
+      layer.className = "annotation-layer";
+      layer.style.width  = viewport.width + "px";
+      layer.style.height = viewport.height + "px";
+
+      linkAnnots.forEach(a => {
+        const rect = viewport.convertToViewportRectangle(a.rect);
+        const x1 = Math.min(rect[0], rect[2]);
+        const y1 = Math.min(rect[1], rect[3]);
+        const x2 = Math.max(rect[0], rect[2]);
+        const y2 = Math.max(rect[1], rect[3]);
+
+        const link = document.createElement("a");
+        link.className = "annotation-link";
+        link.href = a.url;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.style.left   = x1 + "px";
+        link.style.top    = y1 + "px";
+        link.style.width  = (x2 - x1) + "px";
+        link.style.height = (y2 - y1) + "px";
+        link.title = a.url;
+
+        layer.appendChild(link);
+      });
+
+      wrapper.appendChild(layer);
+    } catch (e) {
+      console.error("Error rendering annotations for page " + p, e);
+    }
+  }
+
+  /*****************************************
+      THUMBNAILS
+  ******************************************/
   async function renderThumbnail(p, gen){
     try {
       const page = await pdfDoc.getPage(p);
@@ -309,13 +431,7 @@
 
       if (gen !== renderGeneration) return;
 
-      canvas.onclick = ()=>{
-        const el = document.getElementById("page-"+p);
-        if (el) {
-          el.scrollIntoView({behavior:"smooth"});
-          highlightThumb(p);
-        }
-      };
+      canvas.onclick = ()=>{ scrollToPage(p); };
 
       thumbSidebar.appendChild(canvas);
     } catch (e) {
@@ -343,11 +459,20 @@
   };
 
   /*****************************************
-      ZOOM
+      ZOOM (PRESERVE PAGE / SEARCH POSITION)
   ******************************************/
   function rerenderAndJump(){
-    renderDocument().then(()=>{
-      if (searchIndex >= 0) goToResult(searchIndex);
+    let targetPage;
+    if (searchIndex >= 0 && searchIndex < searchResults.length){
+      targetPage = searchResults[searchIndex].page;
+    } else {
+      targetPage = getCurrentPageInView();
+    }
+
+    renderDocument(targetPage).then(()=>{
+      if (searchIndex >= 0 && searchIndex < searchResults.length){
+        goToResult(searchIndex); // refine to exact match
+      }
     });
   }
 
@@ -394,11 +519,7 @@
     searchIndex = i;
 
     const r = searchResults[i];
-    const el = document.getElementById("page-"+r.page);
-    if (el){
-      el.scrollIntoView({behavior:"smooth"});
-      highlightThumb(r.page);
-    }
+    scrollToPage(r.page);
 
     searchStatus.textContent =
       `Match ${searchIndex+1} of ${searchResults.length}`;
@@ -457,7 +578,7 @@
     resizeTimer = setTimeout(async ()=>{
       await computeInitialZoom();
       updateZoomLabel();
-      rerenderAndJump();
+      rerenderAndJump();  // keeps your place instead of jumping to page 1
     }, 350);
   });
 
