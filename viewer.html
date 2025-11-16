@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="robots" content="noindex" />
 
-  <!-- PDF.js from CDN -->
+  <!-- PDF.js -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 
   <style>
@@ -16,10 +16,10 @@
       background: #111;
       color: white;
       font-family: system-ui, -apple-system, sans-serif;
-      overflow: hidden; /* scroll inside the main container, not the body */
+      overflow: hidden;
     }
 
-    /* Top toolbar */
+    /* Toolbar */
     .toolbar {
       background: #111;
       border-bottom: 1px solid #222;
@@ -51,14 +51,10 @@
       border-radius: 4px;
       padding: 6px 10px;
       cursor: pointer;
-      white-space: nowrap;
     }
+    .toolbar button:hover { background: #333; }
 
-    .toolbar button:hover {
-      background: #333;
-    }
-
-    .toolbar input[type="text"] {
+    .toolbar input {
       background: #1a1a1a;
       border: 1px solid #333;
       padding: 6px 8px;
@@ -70,16 +66,16 @@
     #searchStatus {
       font-size: 12px;
       opacity: 0.7;
+      min-width: 140px;
     }
 
-    /* Main layout: pages + thumbnails */
+    /* Layout */
     .container {
       display: flex;
-      height: calc(100vh - 52px); /* adjust if toolbar height changes */
+      height: calc(100dvh - 52px); /* dynamic viewport height */
       overflow: hidden;
     }
 
-    /* Scrollable PDF page area */
     #pdfScrollArea {
       flex: 1;
       overflow-y: auto;
@@ -89,26 +85,23 @@
     .pdf-page {
       display: block;
       margin: 0 auto 30px auto;
-      box-shadow: 0 0 20px rgba(0, 0, 0, 0.6);
+      box-shadow: 0 0 20px rgba(0,0,0,0.6);
       background: #222;
-      width: 100%;   /* responsive width; height controlled by aspect ratio */
+      width: 100%;
       height: auto;
     }
 
-    /* Right thumbnail bar */
+    /* Thumbnails */
     #thumbSidebar {
       width: 150px;
       background: #181818;
       border-left: 1px solid #222;
       overflow-y: auto;
       padding: 12px;
-      transition: width 0.25s ease, padding 0.25s ease;
+      transition: width .25s ease, padding .25s ease;
     }
-
     #thumbSidebar.hidden {
-      width: 0;
-      padding: 0;
-      border-left: none;
+      width: 0; padding: 0; border-left: none;
     }
 
     .thumb {
@@ -116,417 +109,321 @@
       margin-bottom: 12px;
       cursor: pointer;
       opacity: 0.7;
-      transition: opacity 0.2s, transform 0.1s;
-      box-sizing: border-box;
+      transition: opacity .2s, transform .1s;
     }
+    .thumb:hover { opacity: 1; transform: translateY(-1px); }
+    .thumb.selected { border: 2px solid #4da3ff; opacity: 1; }
 
-    .thumb:hover {
-      opacity: 1;
-      transform: translateY(-1px);
-    }
-
-    .thumb.selected {
-      border: 2px solid #4da3ff;
-      opacity: 1;
-    }
-
-    /* Simple loading / error text */
     #message {
       position: absolute;
       top: 56px;
       left: 16px;
+      opacity: .7;
       font-size: 13px;
-      opacity: 0.7;
       pointer-events: none;
-    }
-
-    @media (max-width: 768px) {
-      .container {
-        height: calc(100vh - 60px);
-      }
-      #thumbSidebar {
-        width: 110px;
-      }
     }
   </style>
 </head>
 <body>
-  <div id="message">Loading PDF…</div>
 
-  <!-- Toolbar -->
-  <div class="toolbar">
-    <div class="group">
-      <button id="toggleThumbsBtn">Hide Thumbnails</button>
-    </div>
+<div id="message">Loading PDF…</div>
 
-    <div class="sep"></div>
+<!-- Toolbar -->
+<div class="toolbar">
 
-    <div class="group">
-      <button id="zoomOutBtn">−</button>
-      <button id="zoomInBtn">+</button>
-      <span id="zoomLabel">100%</span>
-    </div>
-
-    <div class="sep"></div>
-
-    <div class="group">
-      <input id="searchInput" type="text" placeholder="Search…" />
-      <button id="searchBtn">Find</button>
-      <span id="searchStatus"></span>
-    </div>
+  <div class="group">
+    <button id="toggleThumbsBtn">Hide Thumbnails</button>
   </div>
 
-  <!-- Main area: pages + thumbnails -->
-  <div class="container">
-    <div id="pdfScrollArea"></div>
-    <div id="thumbSidebar"></div>
+  <div class="sep"></div>
+
+  <div class="group">
+    <button id="zoomOutBtn">−</button>
+    <button id="zoomInBtn">+</button>
+    <span id="zoomLabel">100%</span>
   </div>
 
-  <script>
-    // PDF.js setup
-    pdfjsLib.GlobalWorkerOptions.workerSrc =
-      "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+  <div class="sep"></div>
 
-    const DEFAULT_PDF_URL = "p/htftmcs.pdf";
-    const urlParams = new URLSearchParams(window.location.search);
-    let pdfPath = urlParams.get("file") || DEFAULT_PDF_URL;
+  <div class="group">
+    <input id="searchInput" type="text" placeholder="Search…" />
+    <button id="searchPrevBtn">←</button>
+    <button id="searchNextBtn">→</button>
+    <button id="searchBtn">Find</button>
+    <span id="searchStatus"></span>
+  </div>
 
-    // Safety: don't allow absolute external URLs
-    if (/^https?:\/\//i.test(pdfPath)) {
-      pdfPath = DEFAULT_PDF_URL;
-    }
+</div>
 
-    const pdfScrollArea = document.getElementById("pdfScrollArea");
-    const thumbSidebar = document.getElementById("thumbSidebar");
-    const toggleThumbsBtn = document.getElementById("toggleThumbsBtn");
-    const searchInput = document.getElementById("searchInput");
-    const searchBtn = document.getElementById("searchBtn");
-    const searchStatus = document.getElementById("searchStatus");
-    const message = document.getElementById("message");
-    const zoomOutBtn = document.getElementById("zoomOutBtn");
-    const zoomInBtn = document.getElementById("zoomInBtn");
-    const zoomLabel = document.getElementById("zoomLabel");
+<!-- Main Layout -->
+<div class="container">
+  <div id="pdfScrollArea"></div>
+  <div id="thumbSidebar"></div>
+</div>
 
-    let pdfDoc = null;
-    let pageScaleBase = 1.0;      // base scale; we compute zoomFactor to fit
-    let zoomFactor = 1.0;         // multiplier adjusted by auto-fit and buttons
-    const minZoom = 0.2;
-    const maxZoom = 3.0;
+<script>
+  /* PDF.js config */
+  pdfjsLib.GlobalWorkerOptions.workerSrc =
+    "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 
-    // Search state
-    let searchResults = [];       // [{ page: number }]
-    let searchIndex = -1;         // current result index
-    let lastSearchQuery = "";
+  const DEFAULT_PDF_URL = "p/htftmcs.pdf";
+  const urlParams = new URLSearchParams(window.location.search);
+  let pdfPath = urlParams.get("file") || DEFAULT_PDF_URL;
+  if (/^https?:\/\//i.test(pdfPath)) pdfPath = DEFAULT_PDF_URL;
 
-    function setMessage(text) {
-      message.textContent = text || "";
-    }
+  const pdfScrollArea = document.getElementById("pdfScrollArea");
+  const thumbSidebar  = document.getElementById("thumbSidebar");
+  const toggleThumbsBtn = document.getElementById("toggleThumbsBtn");
 
-    function updateZoomLabel() {
-      zoomLabel.textContent = Math.round(zoomFactor * 100) + "%";
-    }
+  const searchInput = document.getElementById("searchInput");
+  const searchBtn   = document.getElementById("searchBtn");
+  const searchPrevBtn = document.getElementById("searchPrevBtn");
+  const searchNextBtn = document.getElementById("searchNextBtn");
+  const searchStatus = document.getElementById("searchStatus");
 
-    /* -----------------------
-       Load PDF
-    ------------------------ */
-    pdfjsLib
-      .getDocument(pdfPath)
-      .promise.then(async function (pdf) {
-        pdfDoc = pdf;
-        setMessage("Calculating initial zoom…");
+  const zoomOutBtn = document.getElementById("zoomOutBtn");
+  const zoomInBtn  = document.getElementById("zoomInBtn");
+  const zoomLabel  = document.getElementById("zoomLabel");
+  const message    = document.getElementById("message");
 
-        await computeInitialZoom();   // fit-to-width based on page 1
-        updateZoomLabel();
+  let pdfDoc = null;
+  let pageScaleBase = 1.0;
+  let zoomFactor = 1.0;
+  const minZoom = 0.2;
+  const maxZoom = 3.0;
 
-        setMessage("Rendering pages…");
-        await renderDocument();
-        setMessage("");
-      })
-      .catch(function (err) {
-        console.error("Error loading PDF:", err);
-        setMessage("Error loading PDF.");
-        pdfScrollArea.innerHTML =
-          '<div style="color:#f66;font-size:14px;">Error loading PDF.</div>';
-      });
+  let searchResults = [];
+  let searchIndex = -1;
+  let lastSearchQuery = "";
 
-    /* -----------------------
-       Compute initial zoom for fit-to-width
-    ------------------------ */
-    async function computeInitialZoom() {
-      if (!pdfDoc) return;
+  function setMessage(t){ message.textContent = t || ""; }
+  function updateZoomLabel(){ zoomLabel.textContent = Math.round(zoomFactor*100)+"%"; }
 
-      const containerWidth =
-        pdfScrollArea.clientWidth || window.innerWidth || 800;
-
-      const page = await pdfDoc.getPage(1);
-      const viewport = page.getViewport({ scale: 1.0 });
-      const pageWidth = viewport.width;
-
-      if (!pageWidth) {
-        zoomFactor = 1.0;
-        return;
-      }
-
-      const targetScale = (containerWidth - 40) / pageWidth;
-      zoomFactor = Math.max(minZoom, Math.min(maxZoom, targetScale));
-    }
-
-    /* -----------------------
-       Render all pages + thumbnails
-    ------------------------ */
-    async function renderDocument() {
-      if (!pdfDoc) return;
-
-      pdfScrollArea.innerHTML = "";
-      thumbSidebar.innerHTML = "";
-
-      const numPages = pdfDoc.numPages;
-      const pagePromises = [];
-
-      for (let pageNum = 1; pageNum <= numPages; pageNum++) {
-        pagePromises.push(renderPage(pageNum));
-        renderThumbnail(pageNum);
-      }
-
-      await Promise.all(pagePromises);
-      highlightThumb(1);
-    }
-
-    /* -----------------------
-       Render full pages (vertical stack)
-    ------------------------ */
-    async function renderPage(pageNum) {
-      try {
-        const page = await pdfDoc.getPage(pageNum);
-        const viewport = page.getViewport({
-          scale: pageScaleBase * zoomFactor
-        });
-
-        const canvas = document.createElement("canvas");
-        canvas.className = "pdf-page";
-        canvas.id = "page-" + pageNum;
-
-        const context = canvas.getContext("2d");
-
-        const outputScale = window.devicePixelRatio || 1;
-        const width = viewport.width;
-        const height = viewport.height;
-
-        canvas.width = width * outputScale;
-        canvas.height = height * outputScale;
-
-        canvas.style.width = width + "px";
-        // height is auto via CSS .pdf-page
-
-        const transform =
-          outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : null;
-
-        await page.render({
-          canvasContext: context,
-          viewport: viewport,
-          transform: transform
-        }).promise;
-
-        pdfScrollArea.appendChild(canvas);
-      } catch (e) {
-        console.error("Error rendering page " + pageNum, e);
-      }
-    }
-
-    /* -----------------------
-       Thumbnails on the right
-    ------------------------ */
-    async function renderThumbnail(pageNum) {
-      try {
-        const page = await pdfDoc.getPage(pageNum);
-        const viewport = page.getViewport({ scale: 0.25 });
-
-        const canvas = document.createElement("canvas");
-        canvas.className = "thumb";
-        canvas.id = "thumb-" + pageNum;
-
-        const context = canvas.getContext("2d");
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
-
-        await page.render({
-          canvasContext: context,
-          viewport: viewport
-        }).promise;
-
-        canvas.addEventListener("click", () => {
-          const target = document.getElementById("page-" + pageNum);
-          if (target) {
-            target.scrollIntoView({
-              behavior: "smooth",
-              block: "start"
-            });
-            highlightThumb(pageNum);
-          }
-        });
-
-        thumbSidebar.appendChild(canvas);
-      } catch (e) {
-        console.error("Error rendering thumbnail " + pageNum, e);
-      }
-    }
-
-    function highlightThumb(pageNum) {
-      document
-        .querySelectorAll(".thumb")
-        .forEach((t) => t.classList.remove("selected"));
-      const target = document.getElementById("thumb-" + pageNum);
-      if (target) target.classList.add("selected");
-    }
-
-    /* -----------------------
-       Toggle thumbnails
-    ------------------------ */
-    toggleThumbsBtn.addEventListener("click", () => {
-      if (thumbSidebar.classList.contains("hidden")) {
-        thumbSidebar.classList.remove("hidden");
-        toggleThumbsBtn.textContent = "Hide Thumbnails";
-      } else {
-        thumbSidebar.classList.add("hidden");
-        toggleThumbsBtn.textContent = "Show Thumbnails";
-      }
-    });
-
-    /* -----------------------
-       Zoom controls
-    ------------------------ */
-    zoomInBtn.addEventListener("click", () => {
-      zoomFactor = Math.min(maxZoom, zoomFactor * 1.2);
+  /*****************************************
+      LOAD PDF AND AUTO-FIT ON LOAD
+  ******************************************/
+  pdfjsLib.getDocument(pdfPath).promise
+    .then(async pdf => {
+      pdfDoc = pdf;
+      setMessage("Calculating initial zoom…");
+      await computeInitialZoom();
       updateZoomLabel();
-      renderDocument().then(() => jumpToCurrentSearchIfAny());
+      setMessage("Rendering pages…");
+      await renderDocument();
+      setMessage("");
+    })
+    .catch(err => {
+      console.error(err);
+      setMessage("Error loading PDF.");
+      pdfScrollArea.innerHTML = `<div style="color:#f66">Error loading PDF</div>`;
     });
 
-    zoomOutBtn.addEventListener("click", () => {
-      zoomFactor = Math.max(minZoom, zoomFactor / 1.2);
-      updateZoomLabel();
-      renderDocument().then(() => jumpToCurrentSearchIfAny());
-    });
+  async function computeInitialZoom(){
+    const containerWidth =
+      pdfScrollArea.clientWidth || window.innerWidth || 800;
 
-    /* -----------------------
-       Search with multiple results
-    ------------------------ */
-    function normalize(str) {
-      return (str || "").toLowerCase();
+    const page = await pdfDoc.getPage(1);
+    const viewport = page.getViewport({scale:1.0});
+    const pageWidth = viewport.width;
+
+    const target = (containerWidth - 40) / pageWidth;
+    zoomFactor = Math.max(minZoom, Math.min(maxZoom, target));
+  }
+
+  /*****************************************
+      RENDER DOCUMENT
+  ******************************************/
+  async function renderDocument(){
+    pdfScrollArea.innerHTML = "";
+    thumbSidebar.innerHTML = "";
+
+    const tasks = [];
+    for (let p=1; p<=pdfDoc.numPages; p++){
+      tasks.push(renderPage(p));
+      renderThumbnail(p);
+    }
+    await Promise.all(tasks);
+    highlightThumb(1);
+  }
+
+  async function renderPage(p){
+    const page = await pdfDoc.getPage(p);
+    const viewport = page.getViewport({scale: zoomFactor});
+
+    const canvas = document.createElement("canvas");
+    canvas.className = "pdf-page";
+    canvas.id = "page-" + p;
+
+    const ctx = canvas.getContext("2d");
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width  = viewport.width  * dpr;
+    canvas.height = viewport.height * dpr;
+
+    canvas.style.width = viewport.width + "px";
+
+    const transform = dpr !== 1 ? [dpr,0,0,dpr,0,0] : null;
+
+    await page.render({
+      canvasContext: ctx,
+      viewport,
+      transform
+    }).promise;
+
+    pdfScrollArea.appendChild(canvas);
+  }
+
+  async function renderThumbnail(p){
+    const page = await pdfDoc.getPage(p);
+    const viewport = page.getViewport({scale:0.25});
+
+    const canvas = document.createElement("canvas");
+    canvas.className = "thumb";
+    canvas.id = "thumb-" + p;
+
+    canvas.width  = viewport.width;
+    canvas.height = viewport.height;
+
+    const ctx = canvas.getContext("2d");
+    await page.render({
+      canvasContext: ctx,
+      viewport
+    }).promise;
+
+    canvas.onclick = ()=>{
+      document.getElementById("page-"+p).scrollIntoView({behavior:"smooth"});
+      highlightThumb(p);
+    };
+
+    thumbSidebar.appendChild(canvas);
+  }
+
+  function highlightThumb(p){
+    document.querySelectorAll(".thumb").forEach(t=>t.classList.remove("selected"));
+    const t = document.getElementById("thumb-"+p);
+    if(t) t.classList.add("selected");
+  }
+
+  /*****************************************
+      THUMB TOGGLE
+  ******************************************/
+  toggleThumbsBtn.onclick = ()=>{
+    if(thumbSidebar.classList.contains("hidden")){
+      thumbSidebar.classList.remove("hidden");
+      toggleThumbsBtn.textContent = "Hide Thumbnails";
+    }else{
+      thumbSidebar.classList.add("hidden");
+      toggleThumbsBtn.textContent = "Show Thumbnails";
+    }
+  };
+
+  /*****************************************
+      ZOOM
+  ******************************************/
+  function rerenderAndJump(){
+    renderDocument().then(()=>{
+      if(searchIndex>=0) goToResult(searchIndex);
+    });
+  }
+
+  zoomInBtn.onclick = ()=>{
+    zoomFactor = Math.min(maxZoom, zoomFactor*1.2);
+    updateZoomLabel();
+    rerenderAndJump();
+  };
+
+  zoomOutBtn.onclick = ()=>{
+    zoomFactor = Math.max(minZoom, zoomFactor/1.2);
+    updateZoomLabel();
+    rerenderAndJump();
+  };
+
+  /*****************************************
+      SEARCH WITH MULTIPLE RESULTS
+  ******************************************/
+  function normalize(str){ return (str||"").toLowerCase(); }
+
+  async function buildResults(q){
+    searchResults = [];
+    searchIndex = -1;
+
+    const qNorm = normalize(q);
+    for(let p=1; p<=pdfDoc.numPages; p++){
+      const page = await pdfDoc.getPage(p);
+      const text = await page.getTextContent();
+      const full = text.items.map(i=>i.str).join(" ");
+      let idx = normalize(full).indexOf(qNorm);
+      while(idx !== -1){
+        searchResults.push({page:p});
+        idx = normalize(full).indexOf(qNorm, idx+qNorm.length);
+      }
+    }
+  }
+
+  function goToResult(i){
+    if(!searchResults.length) return;
+
+    i = (i % searchResults.length + searchResults.length) % searchResults.length;
+    searchIndex = i;
+
+    const r = searchResults[i];
+    const el = document.getElementById("page-"+r.page);
+    if(el){
+      el.scrollIntoView({behavior:"smooth"});
+      highlightThumb(r.page);
     }
 
-    async function buildSearchResults(query) {
+    searchStatus.textContent =
+      `Match ${searchIndex+1} of ${searchResults.length}`;
+  }
+
+  async function doSearch(){
+    const q = searchInput.value.trim();
+    if(!q){
       searchResults = [];
       searchIndex = -1;
-
-      if (!pdfDoc) return;
-
-      const qNorm = normalize(query);
-      const numPages = pdfDoc.numPages;
-
-      for (let p = 1; p <= numPages; p++) {
-        const page = await pdfDoc.getPage(p);
-        const textContent = await page.getTextContent();
-        const fullText = textContent.items.map((i) => i.str).join(" ");
-        const normText = normalize(fullText);
-
-        let idx = normText.indexOf(qNorm);
-        while (idx !== -1) {
-          searchResults.push({ page: p });
-          idx = normText.indexOf(qNorm, idx + qNorm.length);
-        }
-      }
+      searchStatus.textContent = "";
+      return;
     }
 
-    function goToSearchResult(index) {
-      if (!searchResults.length) return;
-      const boundedIndex = ((index % searchResults.length) + searchResults.length) % searchResults.length;
-      searchIndex = boundedIndex;
-
-      const res = searchResults[searchIndex];
-      const target = document.getElementById("page-" + res.page);
-      if (target) {
-        target.scrollIntoView({
-          behavior: "smooth",
-          block: "start"
-        });
-        highlightThumb(res.page);
-      }
-
-      searchStatus.textContent =
-        "Match " +
-        (searchIndex + 1) +
-        " of " +
-        searchResults.length +
-        " (use arrow keys to move)";
+    if(q !== lastSearchQuery){
+      lastSearchQuery = q;
+      searchStatus.textContent = "Searching…";
+      await buildResults(q);
     }
 
-    function nextSearchResult() {
-      if (!searchResults.length) return;
-      goToSearchResult(
-        searchIndex < 0 ? 0 : searchIndex + 1
-      );
+    if(!searchResults.length){
+      searchStatus.textContent = "No matches";
+      return;
     }
 
-    function prevSearchResult() {
-      if (!searchResults.length) return;
-      goToSearchResult(
-        searchIndex < 0 ? searchResults.length - 1 : searchIndex - 1
-      );
-    }
+    goToResult(searchIndex+1);
+  }
 
-    async function performSearch() {
-      if (!pdfDoc) return;
+  searchBtn.onclick = doSearch;
+  searchInput.onkeydown = e=>{ if(e.key==="Enter") doSearch(); };
 
-      const query = searchInput.value.trim();
-      if (!query) {
-        searchResults = [];
-        searchIndex = -1;
-        lastSearchQuery = "";
-        searchStatus.textContent = "";
-        return;
-      }
+  searchNextBtn.onclick = ()=> goToResult(searchIndex+1);
+  searchPrevBtn.onclick = ()=> goToResult(searchIndex-1);
 
-      // If new query, rebuild results
-      if (query !== lastSearchQuery) {
-        lastSearchQuery = query;
-        searchStatus.textContent = "Searching…";
-        await buildSearchResults(query);
-      }
+  window.addEventListener("keydown", e=>{
+    if(!searchResults.length) return;
+    if(e.key==="ArrowRight"||e.key==="ArrowDown"){ e.preventDefault(); goToResult(searchIndex+1); }
+    if(e.key==="ArrowLeft" ||e.key==="ArrowUp"  ){ e.preventDefault(); goToResult(searchIndex-1); }
+  });
 
-      if (!searchResults.length) {
-        searchStatus.textContent = "No matches found.";
-        return;
-      }
+  /*****************************************
+      AUTO RE-FIT + RE-RENDER ON RESIZE
+  ******************************************/
+  let resizeTimer = null;
+  window.addEventListener("resize", ()=>{
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(async ()=>{
+      await computeInitialZoom();
+      updateZoomLabel();
+      rerenderAndJump();
+    }, 350);
+  });
 
-      // Move to next result
-      nextSearchResult();
-    }
-
-    function jumpToCurrentSearchIfAny() {
-      if (searchIndex >= 0 && searchIndex < searchResults.length) {
-        goToSearchResult(searchIndex);
-      }
-    }
-
-    searchBtn.addEventListener("click", performSearch);
-    searchInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
-        performSearch();
-      }
-    });
-
-    // Keyboard navigation for search results: arrow keys
-    window.addEventListener("keydown", (e) => {
-      if (!searchResults.length) return;
-
-      if (e.key === "ArrowRight" || e.key === "ArrowDown") {
-        e.preventDefault();
-        nextSearchResult();
-      } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
-        e.preventDefault();
-        prevSearchResult();
-      }
-    });
-  </script>
+</script>
 </body>
 </html>
