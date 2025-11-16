@@ -16,10 +16,10 @@
       background: #111;
       color: white;
       font-family: system-ui, -apple-system, sans-serif;
-      overflow: hidden; /* We'll manage scrolling inside containers */
+      overflow: hidden; /* scroll inside the main container, not the body */
     }
 
-    /* Header / Toolbar */
+    /* Top toolbar */
     .toolbar {
       background: #111;
       border-bottom: 1px solid #222;
@@ -28,6 +28,7 @@
       align-items: center;
       gap: 16px;
       z-index: 2;
+      font-size: 14px;
     }
 
     .toolbar button {
@@ -37,7 +38,9 @@
       border-radius: 4px;
       padding: 6px 10px;
       cursor: pointer;
+      white-space: nowrap;
     }
+
     .toolbar button:hover {
       background: #333;
     }
@@ -51,19 +54,308 @@
       min-width: 180px;
     }
 
-    /* Layout: PDF pages + thumbnails */
+    #searchStatus {
+      font-size: 12px;
+      opacity: 0.7;
+    }
+
+    /* Main layout: pages + thumbnails */
     .container {
       display: flex;
-      height: calc(100vh - 46px); /* minus toolbar */
+      height: calc(100vh - 46px); /* adjust if toolbar height changes */
       overflow: hidden;
     }
 
-    /* Main PDF scroll area */
+    /* Scrollable PDF page area */
     #pdfScrollArea {
       flex: 1;
-      overflow-y: scroll;
+      overflow-y: auto;
       padding: 20px;
     }
 
     .pdf-page {
-      margin
+      margin: 0 auto 30px auto;
+      display: block;
+      box-shadow: 0 0 20px rgba(0, 0, 0, 0.6);
+      background: #222;
+      max-width: 100%;
+      height: auto;
+    }
+
+    /* Right thumbnail bar */
+    #thumbSidebar {
+      width: 150px;
+      background: #181818;
+      border-left: 1px solid #222;
+      overflow-y: auto;
+      padding: 12px;
+      transition: width 0.25s ease, padding 0.25s ease;
+    }
+
+    #thumbSidebar.hidden {
+      width: 0;
+      padding: 0;
+      border-left: none;
+    }
+
+    .thumb {
+      width: 100%;
+      margin-bottom: 12px;
+      cursor: pointer;
+      opacity: 0.7;
+      transition: opacity 0.2s, transform 0.1s;
+      box-sizing: border-box;
+    }
+
+    .thumb:hover {
+      opacity: 1;
+      transform: translateY(-1px);
+    }
+
+    .thumb.selected {
+      border: 2px solid #4da3ff;
+      opacity: 1;
+    }
+
+    /* Simple loading / error text */
+    #message {
+      position: absolute;
+      top: 60px;
+      left: 16px;
+      font-size: 13px;
+      opacity: 0.7;
+      pointer-events: none;
+    }
+
+    @media (max-width: 768px) {
+      .container {
+        height: calc(100vh - 48px);
+      }
+      #thumbSidebar {
+        width: 110px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="message">Loading PDF…</div>
+
+  <!-- Toolbar -->
+  <div class="toolbar">
+    <button id="toggleThumbsBtn">Hide Thumbnails</button>
+
+    <input id="searchInput" type="text" placeholder="Search…" />
+    <button id="searchBtn">Find</button>
+
+    <span id="searchStatus"></span>
+  </div>
+
+  <!-- Main area: pages + thumbnails -->
+  <div class="container">
+    <div id="pdfScrollArea"></div>
+    <div id="thumbSidebar"></div>
+  </div>
+
+  <script>
+    // PDF.js setup
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+    const DEFAULT_PDF_URL = "p/htftmcs.pdf";
+    const urlParams = new URLSearchParams(window.location.search);
+    let pdfPath = urlParams.get("file") || DEFAULT_PDF_URL;
+
+    // Safety: don't allow absolute external URLs
+    if (/^https?:\/\//i.test(pdfPath)) {
+      pdfPath = DEFAULT_PDF_URL;
+    }
+
+    const pdfScrollArea = document.getElementById("pdfScrollArea");
+    const thumbSidebar = document.getElementById("thumbSidebar");
+    const toggleThumbsBtn = document.getElementById("toggleThumbsBtn");
+    const searchInput = document.getElementById("searchInput");
+    const searchBtn = document.getElementById("searchBtn");
+    const searchStatus = document.getElementById("searchStatus");
+    const message = document.getElementById("message");
+
+    let pdfDoc = null;
+
+    function setMessage(text) {
+      message.textContent = text || "";
+    }
+
+    /* -----------------------
+       Load PDF
+    ------------------------ */
+    pdfjsLib
+      .getDocument(pdfPath)
+      .promise.then(function (pdf) {
+        pdfDoc = pdf;
+        setMessage("Rendering pages…");
+
+        // Render all pages + thumbnails
+        for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+          renderPage(pageNum);
+          renderThumbnail(pageNum);
+        }
+
+        // Initial highlight
+        highlightThumb(1);
+        setMessage(""); // clear once started
+      })
+      .catch(function (err) {
+        console.error("Error loading PDF:", err);
+        setMessage("Error loading PDF.");
+        pdfScrollArea.innerHTML =
+          '<div style="color:#f66;font-size:14px;">Error loading PDF.</div>';
+      });
+
+    /* -----------------------
+       Render full pages (vertical stack)
+    ------------------------ */
+    async function renderPage(pageNum) {
+      try {
+        const page = await pdfDoc.getPage(pageNum);
+        const viewport = page.getViewport({ scale: 1.3 });
+
+        const canvas = document.createElement("canvas");
+        canvas.className = "pdf-page";
+        canvas.id = "page-" + pageNum;
+
+        const context = canvas.getContext("2d");
+
+        // Handle HiDPI screens
+        const outputScale = window.devicePixelRatio || 1;
+        canvas.width = viewport.width * outputScale;
+        canvas.height = viewport.height * outputScale;
+        canvas.style.width = viewport.width + "px";
+        canvas.style.height = viewport.height + "px";
+
+        const transform =
+          outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : null;
+
+        await page.render({
+          canvasContext: context,
+          viewport: viewport,
+          transform: transform
+        }).promise;
+
+        pdfScrollArea.appendChild(canvas);
+      } catch (e) {
+        console.error("Error rendering page " + pageNum, e);
+      }
+    }
+
+    /* -----------------------
+       Thumbnails on the right
+    ------------------------ */
+    async function renderThumbnail(pageNum) {
+      try {
+        const page = await pdfDoc.getPage(pageNum);
+        const viewport = page.getViewport({ scale: 0.25 });
+
+        const canvas = document.createElement("canvas");
+        canvas.className = "thumb";
+        canvas.id = "thumb-" + pageNum;
+
+        const context = canvas.getContext("2d");
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+
+        await page.render({
+          canvasContext: context,
+          viewport: viewport
+        }).promise;
+
+        // Click to scroll to page
+        canvas.addEventListener("click", () => {
+          const target = document.getElementById("page-" + pageNum);
+          if (target) {
+            target.scrollIntoView({
+              behavior: "smooth",
+              block: "start"
+            });
+            highlightThumb(pageNum);
+          }
+        });
+
+        thumbSidebar.appendChild(canvas);
+      } catch (e) {
+        console.error("Error rendering thumbnail " + pageNum, e);
+      }
+    }
+
+    function highlightThumb(pageNum) {
+      document
+        .querySelectorAll(".thumb")
+        .forEach((t) => t.classList.remove("selected"));
+      const target = document.getElementById("thumb-" + pageNum);
+      if (target) target.classList.add("selected");
+    }
+
+    /* -----------------------
+       Toggle thumbnails
+    ------------------------ */
+    toggleThumbsBtn.addEventListener("click", () => {
+      if (thumbSidebar.classList.contains("hidden")) {
+        thumbSidebar.classList.remove("hidden");
+        toggleThumbsBtn.textContent = "Hide Thumbnails";
+      } else {
+        thumbSidebar.classList.add("hidden");
+        toggleThumbsBtn.textContent = "Show Thumbnails";
+      }
+    });
+
+    /* -----------------------
+       Simple text search
+    ------------------------ */
+    function normalize(str) {
+      return (str || "").toLowerCase();
+    }
+
+    async function performSearch() {
+      if (!pdfDoc) return;
+
+      const query = searchInput.value.trim();
+      if (!query) {
+        searchStatus.textContent = "";
+        return;
+      }
+
+      const q = normalize(query);
+      searchStatus.textContent = "Searching…";
+
+      try {
+        for (let p = 1; p <= pdfDoc.numPages; p++) {
+          const page = await pdfDoc.getPage(p);
+          const textContent = await page.getTextContent();
+          const fullText = textContent.items.map((i) => i.str).join(" ");
+          if (normalize(fullText).includes(q)) {
+            const target = document.getElementById("page-" + p);
+            if (target) {
+              target.scrollIntoView({
+                behavior: "smooth",
+                block: "start"
+              });
+              highlightThumb(p);
+            }
+            searchStatus.textContent = "Found on page " + p;
+            return;
+          }
+        }
+        searchStatus.textContent = "No matches found.";
+      } catch (e) {
+        console.error("Search error:", e);
+        searchStatus.textContent = "Error during search.";
+      }
+    }
+
+    searchBtn.addEventListener("click", performSearch);
+    searchInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        performSearch();
+      }
+    });
+  </script>
+</body>
+</html>
