@@ -206,16 +206,15 @@
   const message    = document.getElementById("message");
 
   let pdfDoc = null;
+  let numPages = 0;
   let zoomFactor = 1.0;
   const minZoom = 0.2;
   const maxZoom = 3.0;
+  let isRendering = false;
 
   let searchResults = [];
   let searchIndex = -1;
   let lastSearchQuery = "";
-
-  // Render generation guard
-  let renderGeneration = 0;
 
   function setMessage(t){ message.textContent = t || ""; }
   function updateZoomLabel(){ zoomLabel.textContent = Math.round(zoomFactor*100)+"%"; }
@@ -226,11 +225,13 @@
   pdfjsLib.getDocument(pdfPath).promise
     .then(async pdf => {
       pdfDoc = pdf;
+      numPages = pdfDoc.numPages;
       setMessage("Calculating initial zoom…");
       await computeInitialZoom();
       updateZoomLabel();
       setMessage("Rendering pages…");
-      await renderDocument(1); // start at page 1 on initial load
+      await initialRender();
+      scrollToPage(1);
       setMessage("");
     })
     .catch(err => {
@@ -253,89 +254,64 @@
   }
 
   /*****************************************
-      HELPERS: CURRENT PAGE IN VIEW (ROBUST)
+      INITIAL RENDER (build DOM once)
   ******************************************/
-  function getCurrentPageInView(){
-    const pages = Array.from(document.querySelectorAll(".pdf-page"));
-    if (!pages.length) return 1;
-
-    const containerRect = pdfScrollArea.getBoundingClientRect();
-    const containerTop = containerRect.top;
-
-    let bestPage = 1;
-    let bestDist = Infinity;
-
-    for (const canvas of pages){
-      const id = canvas.id || "";
-      const m = id.match(/^page-(\d+)$/);
-      if (!m) continue;
-      const pageNum = parseInt(m[1], 10) || 1;
-
-      const rect = canvas.getBoundingClientRect();
-      const dist = Math.abs(rect.top - containerTop);
-      if (dist < bestDist){
-        bestDist = dist;
-        bestPage = pageNum;
-      }
-    }
-    return bestPage;
-  }
-
-  function scrollToPage(pageNum){
-    const el = document.getElementById("page-"+pageNum);
-    if (el){
-      el.scrollIntoView({behavior:"smooth"});
-      highlightThumb(pageNum);
-    }
-  }
-
-  /*****************************************
-      RENDER DOCUMENT (SEQUENTIAL, GENERATION-GUARDED)
-      targetPage: page number to scroll back to (optional)
-  ******************************************/
-  async function renderDocument(targetPage){
+  async function initialRender(){
     if (!pdfDoc) return;
-
-    const thisGen = ++renderGeneration;
+    isRendering = true;
 
     pdfScrollArea.innerHTML = "";
     thumbSidebar.innerHTML  = "";
 
-    const numPages = pdfDoc.numPages;
-
     for (let p = 1; p <= numPages; p++) {
-      await renderPage(p, thisGen);
-      await renderThumbnail(p, thisGen);
+      await ensurePageStructure(p);
+      await renderPageContent(p);
+      await renderThumbnail(p);
     }
 
-    if (thisGen !== renderGeneration) return;
+    isRendering = false;
+  }
 
-    if (typeof targetPage === "number" && targetPage >= 1 && targetPage <= numPages){
-      scrollToPage(targetPage);
-    } else {
-      scrollToPage(1);
+  async function ensurePageStructure(p){
+    // Create wrapper + canvas if they don't exist
+    let wrapper = document.getElementById("page-wrap-" + p);
+    if (!wrapper){
+      wrapper = document.createElement("div");
+      wrapper.className = "page-wrapper";
+      wrapper.id = "page-wrap-" + p;
+      pdfScrollArea.appendChild(wrapper);
+    }
+
+    let canvas = document.getElementById("page-" + p);
+    if (!canvas){
+      canvas = document.createElement("canvas");
+      canvas.className = "pdf-page";
+      canvas.id = "page-" + p;
+      wrapper.appendChild(canvas);
+    }
+
+    // Ensure annotation layer exists
+    let layer = wrapper.querySelector(".annotation-layer");
+    if (!layer){
+      layer = document.createElement("div");
+      layer.className = "annotation-layer";
+      wrapper.appendChild(layer);
     }
   }
 
   /*****************************************
-      RENDER PAGE + LINK ANNOTATIONS
+      RENDER PAGE CONTENT AT CURRENT ZOOM
   ******************************************/
-  async function renderPage(p, gen){
+  async function renderPageContent(p){
     try {
       const page = await pdfDoc.getPage(p);
-      if (gen !== renderGeneration) return;
-
       const viewport = page.getViewport({scale: zoomFactor});
 
-      // Wrapper to hold canvas + annotation layer
-      const wrapper = document.createElement("div");
-      wrapper.className = "page-wrapper";
-      wrapper.id = "page-wrap-" + p;
-      wrapper.style.width = viewport.width + "px";
+      const wrapper = document.getElementById("page-wrap-" + p);
+      const canvas  = document.getElementById("page-" + p);
+      if (!wrapper || !canvas) return;
 
-      const canvas = document.createElement("canvas");
-      canvas.className = "pdf-page";
-      canvas.id = "page-" + p;
+      wrapper.style.width = viewport.width + "px";
 
       const ctx = canvas.getContext("2d");
       const dpr = window.devicePixelRatio || 1;
@@ -352,31 +328,33 @@
         transform
       }).promise;
 
-      if (gen !== renderGeneration) return;
-
-      wrapper.appendChild(canvas);
-      pdfScrollArea.appendChild(wrapper);
-
-      // Render clickable link annotations on top
-      await renderAnnotations(page, viewport, p, gen, wrapper);
-
+      // Update annotations
+      await renderAnnotations(page, viewport, p);
     } catch (e) {
       console.error("Error rendering page " + p, e);
     }
   }
 
-  async function renderAnnotations(page, viewport, p, gen, wrapper){
+  async function renderAnnotations(page, viewport, p){
     try {
       const annotations = await page.getAnnotations();
-      if (gen !== renderGeneration) return;
+      const wrapper = document.getElementById("page-wrap-" + p);
+      if (!wrapper) return;
+
+      let layer = wrapper.querySelector(".annotation-layer");
+      if (!layer){
+        layer = document.createElement("div");
+        layer.className = "annotation-layer";
+        wrapper.appendChild(layer);
+      }
+
+      // Clear old links
+      layer.innerHTML = "";
+      layer.style.width  = viewport.width + "px";
+      layer.style.height = viewport.height + "px";
 
       const linkAnnots = annotations.filter(a => a.subtype === "Link" && a.url);
       if (!linkAnnots.length) return;
-
-      const layer = document.createElement("div");
-      layer.className = "annotation-layer";
-      layer.style.width  = viewport.width + "px";
-      layer.style.height = viewport.height + "px";
 
       linkAnnots.forEach(a => {
         const rect = viewport.convertToViewportRectangle(a.rect);
@@ -398,8 +376,6 @@
 
         layer.appendChild(link);
       });
-
-      wrapper.appendChild(layer);
     } catch (e) {
       console.error("Error rendering annotations for page " + p, e);
     }
@@ -408,31 +384,29 @@
   /*****************************************
       THUMBNAILS
   ******************************************/
-  async function renderThumbnail(p, gen){
+  async function renderThumbnail(p){
     try {
       const page = await pdfDoc.getPage(p);
-      if (gen !== renderGeneration) return;
-
       const viewport = page.getViewport({scale:0.25});
 
-      const canvas = document.createElement("canvas");
-      canvas.className = "thumb";
-      canvas.id = "thumb-" + p;
+      let thumbCanvas = document.getElementById("thumb-" + p);
+      if (!thumbCanvas){
+        thumbCanvas = document.createElement("canvas");
+        thumbCanvas.className = "thumb";
+        thumbCanvas.id = "thumb-" + p;
+        thumbSidebar.appendChild(thumbCanvas);
 
-      canvas.width  = viewport.width;
-      canvas.height = viewport.height;
+        thumbCanvas.onclick = ()=>{ scrollToPage(p); };
+      }
 
-      const ctx = canvas.getContext("2d");
+      thumbCanvas.width  = viewport.width;
+      thumbCanvas.height = viewport.height;
+
+      const ctx = thumbCanvas.getContext("2d");
       await page.render({
         canvasContext: ctx,
         viewport
       }).promise;
-
-      if (gen !== renderGeneration) return;
-
-      canvas.onclick = ()=>{ scrollToPage(p); };
-
-      thumbSidebar.appendChild(canvas);
     } catch (e) {
       console.error("Error rendering thumbnail " + p, e);
     }
@@ -440,8 +414,16 @@
 
   function highlightThumb(p){
     document.querySelectorAll(".thumb").forEach(t=>t.classList.remove("selected"));
-    const t = document.getElementById("thumb-"+p);
+    const t = document.getElementById("thumb-" + p);
     if (t) t.classList.add("selected");
+  }
+
+  function scrollToPage(pageNum){
+    const el = document.getElementById("page-" + pageNum);
+    if (el){
+      el.scrollIntoView({behavior:"smooth"});
+      highlightThumb(pageNum);
+    }
   }
 
   /*****************************************
@@ -458,33 +440,37 @@
   };
 
   /*****************************************
-      ZOOM (PRESERVE PAGE / SEARCH POSITION)
+      ZOOM (REDRAW IN PLACE, DON'T JUMP)
   ******************************************/
-  function rerenderAndJump(){
-    let targetPage;
-    if (searchIndex >= 0 && searchIndex < searchResults.length){
-      targetPage = searchResults[searchIndex].page;
-    } else {
-      targetPage = getCurrentPageInView();
+  async function redrawAllPages(){
+    if (!pdfDoc || isRendering) return;
+    isRendering = true;
+
+    // Just repaint canvases; don't touch scrollTop
+    for (let p = 1; p <= numPages; p++) {
+      await renderPageContent(p);
     }
 
-    renderDocument(targetPage).then(()=>{
-      if (searchIndex >= 0 && searchIndex < searchResults.length){
-        goToResult(searchIndex); // refine to exact match
-      }
-    });
+    isRendering = false;
   }
 
-  zoomInBtn.onclick = ()=>{
+  zoomInBtn.onclick = async ()=>{
     zoomFactor = Math.min(maxZoom, zoomFactor*1.2);
     updateZoomLabel();
-    rerenderAndJump();
+    await redrawAllPages();
+    // If a search result is active, refine to that page
+    if (searchIndex >= 0 && searchIndex < searchResults.length){
+      scrollToPage(searchResults[searchIndex].page);
+    }
   };
 
-  zoomOutBtn.onclick = ()=>{
+  zoomOutBtn.onclick = async ()=>{
     zoomFactor = Math.max(minZoom, zoomFactor/1.2);
     updateZoomLabel();
-    rerenderAndJump();
+    await redrawAllPages();
+    if (searchIndex >= 0 && searchIndex < searchResults.length){
+      scrollToPage(searchResults[searchIndex].page);
+    }
   };
 
   /*****************************************
@@ -497,8 +483,6 @@
     searchIndex   = -1;
 
     const qNorm = normalize(q);
-    const numPages = pdfDoc.numPages;
-
     for (let p = 1; p <= numPages; p++) {
       const page = await pdfDoc.getPage(p);
       const text = await page.getTextContent();
@@ -567,9 +551,8 @@
     }
   });
 
-  /* NOTE: No window.resize handler anymore.
-     Viewer will not auto-refit on browser resize,
-     so it will not jump to the first page. */
+  /* NOTE: No window.resize handler.
+     Resizing the browser/iframe will NOT cause re-render or scroll jumps. */
 </script>
 </body>
 </html>
