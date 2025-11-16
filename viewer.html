@@ -427,6 +427,35 @@
   }
 
   /*****************************************
+      FIND CURRENT PAGE IN VIEW (for zoom anchor)
+  ******************************************/
+  function getCurrentPageInView(){
+    const pages = Array.from(document.querySelectorAll(".pdf-page"));
+    if (!pages.length) return 1;
+
+    const containerRect = pdfScrollArea.getBoundingClientRect();
+    const containerTop = containerRect.top;
+
+    let bestPage = 1;
+    let bestDist = Infinity;
+
+    for (const canvas of pages){
+      const id = canvas.id || "";
+      const m = id.match(/^page-(\d+)$/);
+      if (!m) continue;
+      const pageNum = parseInt(m[1], 10) || 1;
+
+      const rect = canvas.getBoundingClientRect();
+      const dist = Math.abs(rect.top - containerTop);
+      if (dist < bestDist){
+        bestDist = dist;
+        bestPage = pageNum;
+      }
+    }
+    return bestPage;
+  }
+
+  /*****************************************
       THUMBNAIL TOGGLE
   ******************************************/
   toggleThumbsBtn.onclick = ()=>{
@@ -440,13 +469,12 @@
   };
 
   /*****************************************
-      ZOOM (REDRAW IN PLACE, DON'T JUMP)
+      ZOOM (ANCHOR TO TOP OF CURRENT PAGE)
   ******************************************/
   async function redrawAllPages(){
     if (!pdfDoc || isRendering) return;
     isRendering = true;
 
-    // Just repaint canvases; don't touch scrollTop
     for (let p = 1; p <= numPages; p++) {
       await renderPageContent(p);
     }
@@ -455,22 +483,29 @@
   }
 
   zoomInBtn.onclick = async ()=>{
+    const anchorPage =
+      (searchIndex >= 0 && searchIndex < searchResults.length)
+        ? searchResults[searchIndex].page
+        : getCurrentPageInView();
+
     zoomFactor = Math.min(maxZoom, zoomFactor*1.2);
     updateZoomLabel();
+
     await redrawAllPages();
-    // If a search result is active, refine to that page
-    if (searchIndex >= 0 && searchIndex < searchResults.length){
-      scrollToPage(searchResults[searchIndex].page);
-    }
+    scrollToPage(anchorPage);
   };
 
   zoomOutBtn.onclick = async ()=>{
+    const anchorPage =
+      (searchIndex >= 0 && searchIndex < searchResults.length)
+        ? searchResults[searchIndex].page
+        : getCurrentPageInView();
+
     zoomFactor = Math.max(minZoom, zoomFactor/1.2);
     updateZoomLabel();
+
     await redrawAllPages();
-    if (searchIndex >= 0 && searchIndex < searchResults.length){
-      scrollToPage(searchResults[searchIndex].page);
-    }
+    scrollToPage(anchorPage);
   };
 
   /*****************************************
