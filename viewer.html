@@ -29,6 +29,7 @@
       gap: 16px;
       z-index: 2;
       font-size: 14px;
+      flex-wrap: wrap;
     }
 
     .toolbar button {
@@ -51,7 +52,7 @@
       padding: 6px 8px;
       border-radius: 4px;
       color: white;
-      min-width: 180px;
+      min-width: 160px;
     }
 
     #searchStatus {
@@ -59,10 +60,22 @@
       opacity: 0.7;
     }
 
+    .toolbar .group {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .toolbar .sep {
+      width: 1px;
+      height: 24px;
+      background: #333;
+    }
+
     /* Main layout: pages + thumbnails */
     .container {
       display: flex;
-      height: calc(100vh - 46px); /* adjust if toolbar height changes */
+      height: calc(100vh - 52px); /* adjust if toolbar height changes */
       overflow: hidden;
     }
 
@@ -74,12 +87,12 @@
     }
 
     .pdf-page {
-      margin: 0 auto 30px auto;
       display: block;
+      margin: 0 auto 30px auto;
       box-shadow: 0 0 20px rgba(0, 0, 0, 0.6);
       background: #222;
-      max-width: 100%;
-      height: auto;
+      width: 100%;    /* responsive width */
+      height: auto;   /* keep intrinsic aspect ratio */
     }
 
     /* Right thumbnail bar */
@@ -120,7 +133,7 @@
     /* Simple loading / error text */
     #message {
       position: absolute;
-      top: 60px;
+      top: 56px;
       left: 16px;
       font-size: 13px;
       opacity: 0.7;
@@ -129,7 +142,7 @@
 
     @media (max-width: 768px) {
       .container {
-        height: calc(100vh - 48px);
+        height: calc(100vh - 60px);
       }
       #thumbSidebar {
         width: 110px;
@@ -142,12 +155,25 @@
 
   <!-- Toolbar -->
   <div class="toolbar">
-    <button id="toggleThumbsBtn">Hide Thumbnails</button>
+    <div class="group">
+      <button id="toggleThumbsBtn">Hide Thumbnails</button>
+    </div>
 
-    <input id="searchInput" type="text" placeholder="Search…" />
-    <button id="searchBtn">Find</button>
+    <div class="sep"></div>
 
-    <span id="searchStatus"></span>
+    <div class="group">
+      <button id="zoomOutBtn">−</button>
+      <button id="zoomInBtn">+</button>
+      <span id="zoomLabel">100%</span>
+    </div>
+
+    <div class="sep"></div>
+
+    <div class="group">
+      <input id="searchInput" type="text" placeholder="Search…" />
+      <button id="searchBtn">Find</button>
+      <span id="searchStatus"></span>
+    </div>
   </div>
 
   <!-- Main area: pages + thumbnails -->
@@ -177,11 +203,22 @@
     const searchBtn = document.getElementById("searchBtn");
     const searchStatus = document.getElementById("searchStatus");
     const message = document.getElementById("message");
+    const zoomOutBtn = document.getElementById("zoomOutBtn");
+    const zoomInBtn = document.getElementById("zoomInBtn");
+    const zoomLabel = document.getElementById("zoomLabel");
 
     let pdfDoc = null;
+    let pageScaleBase = 1.3;   // base scale
+    let zoomFactor = 1.0;      // multiplier for zoom buttons
+    const minZoom = 0.6;
+    const maxZoom = 2.5;
 
     function setMessage(text) {
       message.textContent = text || "";
+    }
+
+    function updateZoomLabel() {
+      zoomLabel.textContent = Math.round(zoomFactor * 100) + "%";
     }
 
     /* -----------------------
@@ -192,16 +229,7 @@
       .promise.then(function (pdf) {
         pdfDoc = pdf;
         setMessage("Rendering pages…");
-
-        // Render all pages + thumbnails
-        for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-          renderPage(pageNum);
-          renderThumbnail(pageNum);
-        }
-
-        // Initial highlight
-        highlightThumb(1);
-        setMessage(""); // clear once started
+        renderDocument();
       })
       .catch(function (err) {
         console.error("Error loading PDF:", err);
@@ -211,12 +239,38 @@
       });
 
     /* -----------------------
+       Render all pages + thumbnails
+    ------------------------ */
+    async function renderDocument() {
+      if (!pdfDoc) return;
+
+      // Clear old canvases
+      pdfScrollArea.innerHTML = "";
+      thumbSidebar.innerHTML = "";
+      setMessage("Rendering pages…");
+
+      const numPages = pdfDoc.numPages;
+      const pagePromises = [];
+
+      for (let pageNum = 1; pageNum <= numPages; pageNum++) {
+        pagePromises.push(renderPage(pageNum));
+        renderThumbnail(pageNum);  // thumbs stay small, no zoom
+      }
+
+      await Promise.all(pagePromises);
+      highlightThumb(1);
+      setMessage("");
+    }
+
+    /* -----------------------
        Render full pages (vertical stack)
     ------------------------ */
     async function renderPage(pageNum) {
       try {
         const page = await pdfDoc.getPage(pageNum);
-        const viewport = page.getViewport({ scale: 1.3 });
+        const viewport = page.getViewport({
+          scale: pageScaleBase * zoomFactor
+        });
 
         const canvas = document.createElement("canvas");
         canvas.className = "pdf-page";
@@ -224,12 +278,17 @@
 
         const context = canvas.getContext("2d");
 
-        // Handle HiDPI screens
+        // HiDPI support
         const outputScale = window.devicePixelRatio || 1;
-        canvas.width = viewport.width * outputScale;
-        canvas.height = viewport.height * outputScale;
-        canvas.style.width = viewport.width + "px";
-        canvas.style.height = viewport.height + "px";
+        const width = viewport.width;
+        const height = viewport.height;
+
+        canvas.width = width * outputScale;
+        canvas.height = height * outputScale;
+
+        // Responsive display size; browser preserves aspect ratio
+        canvas.style.width = width + "px";
+        // DO NOT set style.height; allow height:auto via CSS
 
         const transform =
           outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : null;
@@ -305,6 +364,23 @@
         toggleThumbsBtn.textContent = "Show Thumbnails";
       }
     });
+
+    /* -----------------------
+       Zoom controls
+    ------------------------ */
+    zoomInBtn.addEventListener("click", () => {
+      zoomFactor = Math.min(maxZoom, zoomFactor * 1.2);
+      updateZoomLabel();
+      renderDocument();
+    });
+
+    zoomOutBtn.addEventListener("click", () => {
+      zoomFactor = Math.max(minZoom, zoomFactor / 1.2);
+      updateZoomLabel();
+      renderDocument();
+    });
+
+    updateZoomLabel();
 
     /* -----------------------
        Simple text search
